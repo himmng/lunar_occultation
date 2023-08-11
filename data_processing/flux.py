@@ -1,151 +1,163 @@
-from moon_flux import *
-import sys
-
-ind = int(sys.argv[1])
-
-obsID = np.loadtxt('/astro/mwaeor/thimu/phase1/scripts/hyperdrive/obsIDs_Aug2015', dtype=np.int32)
-
-on_ind = int(2*ind)
-off_ind = int(on_ind + 1)
-
-on_obsid = obsID[on_ind]
-off_obsid = obsID[off_ind]
-
-path = '/astro/mwaeor/thimu/phase1/scripts/hyperdrive/images_rerun2/'
-path2 = 'flux_calc/'
-
-crop_pixels = 126
-im_pixels = 2048
-channels = 768
-
-Diff = np.zeros(shape = (channels,int(2*crop_pixels),int(2*crop_pixels)))
-Psf = np.zeros(shape = Diff.shape)
-Recon_Moon = np.zeros(shape = Diff.shape)
-Recon_Rfi = np.zeros(shape = Diff.shape)
-M_conv = np.zeros(shape = Diff.shape)
-R_conv = np.zeros(shape= Diff.shape)
-diff_rms = np.zeros(channels)
-
-#S_M = np.zeros(channels)
-#S_M_err = np.zeros(channels)
-#S_M_err_Jpb = np.zeros(channels)
-
-S_M_T = np.zeros(channels)
-S_M_T_err = np.zeros(channels)
-S_M_T_err_Jpb = np.zeros(channels)
-
-#S_RFI = np.zeros(channels)
-#S_RFI_err = np.zeros(channels)
-#S_RFI_err_Jpb = np.zeros(channels)
-
-S_RFI_T = np.zeros(channels)
-S_RFI_T_err = np.zeros(channels)
-S_RFI_T_err_Jpb = np.zeros(channels)
-
-n_px_beam = np.zeros(channels)
-pix_size_deg = np.zeros(channels)
-
-
 try:
+    
+    import sys
+    import argparse
+    import numpy as np
+    from moon_flux import Process_Data
 
-    for i in range(channels):
+except ImportError:
+    
+    raise ImportError('repo. absent!')
 
-        if i < 10:
-            imo = path+'%d-000%d-image-pb.fits'%(on_obsid, i)
-            imf= path+'%d-000%d-image-pb.fits'%(off_obsid, i)
-            psf= path+'%d-000%d-psf-pb.fits'%(on_obsid, i)
-            beamXX = path+'%d-000%d-beam-XX.fits'%(on_obsid, i)
-            beamXXi = path+'%d-000%d-beam-XXi.fits'%(on_obsid, i)
-            beamYY = path+'%d-000%d-beam-YY.fits'%(on_obsid, i)
-            beamYYi = path+'%d-000%d-beam-YYi.fits'%(on_obsid, i)
 
-            
-            
-        elif 10 <= i < 100:
-            imo = path+'%d-00%d-image-pb.fits'%(on_obsid, i)
-            imf= path+'%d-00%d-image-pb.fits'%(off_obsid, i)
-            psf= path+'%d-00%d-psf-pb.fits'%(on_obsid, i)
-            beamXX = path+'%d-00%d-beam-XX.fits'%(on_obsid, i)
-            beamXXi = path+'%d-00%d-beam-XXi.fits'%(on_obsid, i)
-            beamYY = path+'%d-00%d-beam-YY.fits'%(on_obsid, i)
-            beamYYi = path+'%d-00%d-beam-YYi.fits'%(on_obsid, i)
-            
-        else:
-            imo = path+'%d-0%d-image-pb.fits'%(on_obsid, i)
-            imf= path+'%d-0%d-image-pb.fits'%(off_obsid, i)
-            psf= path+'%d-0%d-psf-pb.fits'%(on_obsid, i)
-            beamXX = path+'%d-0%d-beam-XX.fits'%(on_obsid, i)
-            beamXXi = path+'%d-0%d-beam-XXi.fits'%(on_obsid, i)
-            beamYY = path+'%d-0%d-beam-YY.fits'%(on_obsid, i)
-            beamYYi = path+'%d-0%d-beam-YYi.fits'%(on_obsid, i)
+parser = argparse.ArgumentParser(description='Running the Lunar image processor')
+parser.add_argument('-p', '--datapath', type=str, metavar='', required=True, help='path of the dataset, e.g fits images')
+parser.add_argument('-s', '--savepath', type=str, metavar='', required=True, help='path to save the datasets, e.g numpy arrays, cropped images')
+parser.add_argument('-o', '--obsIDpath', type=str, metavar='', required=True, help='path of the observational IDs, e.g GPSTIME array')
+parser.add_argument('-i', '--obsID_index', type=int, metavar='', required=True, help='index of the obsID to process')
+args = parser.parse_args()
+
+#datapath = 'testimages/'
+#savepath = 'flux_calc/'
+
+ind = int(args.obsID_index)# int(sys.argv[1])
+obsID = np.loadtxt(args.obsIDpath, dtype=np.int32)
+
+ON_ind = int(2*ind)
+OFF_ind = int(ON_ind + 1)
+ON_obsID = obsID[ON_ind]
+OFF_obsID = obsID[OFF_ind]
+
+crop_pixels = 256
+image_pixels = 4096
+channels = 24
+
+def process(datapath=None, savepath=None, ON_obsID=None, OFF_obsID=None,\
+            crop_pixels=None, image_pixels=None, channels=None):
+    """
+    
+    Processing the images
+    
+    Args:
+        datapath (str, optional): path to the dataset, e.g. images.
+        savepath (str, optional): save path location. 
+        ON_obsID (int, optional): GPSTIME ON-Moon.
+        OFF_obsID (int, optional): GPSTIME OFF-Moon.
+        image_pixels (int, optional): number of pixels in the images.
+        channels (int, optional): number of frequency channels.
+
+    Raises:
+    
+        IOError: file absent error
+        
+    """
+    
+    Diff = np.zeros(shape = (channels, int(2*crop_pixels), int(2*crop_pixels)))
+    PSF = np.zeros(shape = Diff.shape)
+    Recon_Moon = np.zeros(shape = Diff.shape)
+    Recon_RFI = np.zeros(shape = Diff.shape)
+    Moon_conv_PSF = np.zeros(shape = Diff.shape)
+    RFI_conv_PSF = np.zeros(shape= Diff.shape)
+
+    Diff_rms = np.zeros(channels)
+    S_disk = np.zeros(channels)
+    S_disk_err = np.zeros(channels)
+    S_spec = np.zeros(channels)
+    S_spec_err = np.zeros(channels)
+    npix_per_beam = np.zeros(channels)
+    pix_size_deg = np.zeros(channels)
+    
+    for channel in range(channels):
+
+        try:
+            if channel < 10:
+                imON = datapath+'%d-000%d-image-pb.fits'%(ON_obsID, channel)
+                imOFF= datapath+'%d-000%d-image-pb.fits'%(OFF_obsID, channel)
+                PSF= datapath+'%d-000%d-psf-pb.fits'%(ON_obsID, channel)   
+                
+            elif 10 <= channel < 100:
+                imON = datapath+'%d-00%d-image-pb.fits'%(ON_obsID, channel)
+                imOFF= datapath+'%d-00%d-image-pb.fits'%(OFF_obsID, channel)
+                PSF= datapath+'%d-00%d-psf-pb.fits'%(ON_obsID, channel)
+                
+            else:
+                imON = datapath+'%d-0%d-image-pb.fits'%(ON_obsID, channel)
+                imOFF= datapath+'%d-0%d-image-pb.fits'%(OFF_obsID, channel)
+                PSF= datapath+'%d-0%d-psf-pb.fits'%(ON_obsID, channel)
+                
+        except IOError:
+            raise IOError('error at', ON_obsID, OFF_obsID)
   
-        a = dirty_diff(ON=imo, OFF=imf, PSF=psf, im_pixels=im_pixels, crop_pixels=crop_pixels, norm_psf=True)
-
-        if np.isnan(a[0][0][0]) == np.nan:
+        A = Process_Data().get_difference_cropped_image(ON=imON,
+                                                        OFF=imOFF,
+                                                        PSF=PSF,
+                                                        crop_pixels=crop_pixels,
+                                                        image_pixels=image_pixels,
+                                                        norm_psf=True,
+                                                        avoid_difference=False)
+        if np.isnan(A[0][0][0]) == np.nan:
             pass
-
+        
         else:
-            b = mask(diff=a[0], psf=a[1], n_pixels_per_beam=a[2], pix_size_deg=a[3], beam_area_deg_sq=a[4], RFI_broadn=True,\
-                hl=5, vl=2, hr=3, vr=3)
+            
+            B = Process_Data().get_flux_n_difference_images(diff=A[0],
+                                                            PSF=A[1],
+                                                            n_pixels_per_beam=A[2],
+                                                            pix_size_deg=A[3],
+                                                            beam_area=A[4],
+                                                            RFI_pixels=None,
+                                                            RFI_broadenning=False,
+                                                            extent=None,
+                                                            rms_extent=None,
+                                                            single_RFImodel=False)
+            
+            Diff[channel] = A[0]
+            PSF[channel] = A[1]
+            npix_per_beam[channel] = A[2]
+            pix_size_deg[channel] = A[3]
+            
+            Moon_conv_PSF[channel] = B[0]
+            RFI_conv_PSF[channel] = B[1]
+            Recon_Moon[channel] = B[2]
+            Recon_RFI[channel] = B[3]
+            
+            S_disk[channel] = B[6]
+            S_disk_err[channel] = B[7]
+            
+            S_spec[channel] = B[10]
+            S_spec_err[channel] = B[11]
 
-            Diff[i] = a[0]
-            Psf[i] = a[1]
-            pix_size_deg[i] = a[3]
-            n_px_beam[i] = a[2]
+            Diff_rms[channel] = B[13]
 
-            M_conv[i] = b[0]
-            R_conv[i] = b[1]
-            Recon_Moon[i] = b[2]
-            Recon_Rfi[i] = b[3]
+        print('done %d channels'%channel)
 
-            #S_M[i] = b[5]
-            #S_M_err[i] = b[6]
-            #S_M_err_Jpb[i] = b[7]
-
-            S_M_T[i] = b[8]
-            S_M_T_err[i] = b[9]
-
-            #S_RFI[i] = b[10]
-            #S_RFI_err[i] = b[11]
-            #S_RFI_err_Jpb[i] = b[12]
-
-            S_RFI_T[i] = b[13]
-            S_RFI_T_err[i] = b[14]
-
-            diff_rms[i] = b[15]
-
-        print('done %d channels'%i)
-
-
-    np.save(path2+'%d_diff_crop_image_'%on_obsid, Diff)    
-    np.save(path2+'%d_psf_crop_image_'%on_obsid, Psf)
-    np.save(path2+'%d_M_conv_crop_image_'%on_obsid, M_conv)    
-    np.save(path2+'%d_R_conv_crop_image_'%on_obsid, R_conv)
-    np.savetxt(path2+'%d_pix_deg_'%on_obsid, pix_size_deg)
-    np.savetxt(path2+'%d_n_pix_beam_'%on_obsid, n_px_beam)
-
-    #np.savetxt(path2+'%d_S_M_'%on_obsid, S_M)
-    #np.savetxt(path2+'%d_S_M_err_'%on_obsid, S_M_err)
-    #np.savetxt(path2+'%d_S_M_err_Jpb_'%on_obsid, S_M_err_Jpb)
-
-    np.savetxt(path2+'%d_S_M_T_'%on_obsid, S_M_T)
-    np.savetxt(path2+'%d_S_M_T_err_'%on_obsid, S_M_T_err)
-
-
-    #np.savetxt(path2+'%d_S_RFI_'%on_obsid, S_RFI)
-    #np.savetxt(path2+'%d_S_RFI_err_'%on_obsid, S_RFI_err)
-    #np.savetxt(path2+'%d_S_RFI_err_Jpb_'%on_obsid, S_RFI_err_Jpb)
-
-    np.savetxt(path2+'%d_S_RFI_T_'%on_obsid, S_RFI_T)
-    np.savetxt(path2+'%d_S_RFI_T_err_'%on_obsid, S_RFI_T_err)
-
-    np.save(path2+'%d_Recon_Moon_crop_image_'%on_obsid, Recon_Moon)
-    np.save(path2+'%d_Recon_Rfi_crop_image_'%on_obsid, Recon_Rfi)
-
-    np.save(path2+'%d_diff_RMS_'%on_obsid, diff_rms)
+    np.save(savepath+'%d_diff_crop'%ON_obsID, Diff)    
+    np.save(savepath+'%d_PSF_crop'%ON_obsID, PSF)
+    np.save(savepath+'%d_Recon_Moon_crop'%ON_obsID, Recon_Moon)
+    np.save(savepath+'%d_Recon_RFI_crop'%ON_obsID, Recon_RFI)
     
+    np.save(savepath+'%d_Moon_conv_PSF'%ON_obsID, Moon_conv_PSF)    
+    np.save(savepath+'%d_RFI_conv_PSF'%ON_obsID, RFI_conv_PSF)
+    np.savetxt(savepath+'%d_pix_deg'%ON_obsID, pix_size_deg)
+    np.savetxt(savepath+'%d_n_pix_beam'%ON_obsID, npix_per_beam)
+
+    np.savetxt(savepath+'%d_S_disk'%ON_obsID, S_disk)
+    np.savetxt(savepath+'%d_S_disk_err'%ON_obsID, S_disk_err)
+    
+    np.savetxt(savepath+'%d_S_spec'%ON_obsID, S_spec)
+    np.savetxt(savepath+'%d_S_spec_err'%ON_obsID, S_spec_err)
+    
+    np.save(savepath+'%d_diff_RMS_'%ON_obsID, Diff_rms)
     
 
+if __name__ == '__main__':
+    
+    process(datapath=args.datapath, savepath=args.savepath, ON_obsID=ON_obsID, OFF_obsID=OFF_obsID,\
+            crop_pixels=crop_pixels, image_pixels=image_pixels, channels=channels)
 
-except:
-    print('error at', on_obsid, off_obsid)
+    if args.quiet:
+        print('done')
+    elif args.verbose:
+        print('ON-OFF pair %d, %d obsIDs done'%(ON_obsID, OFF_obsID))
+    else:
+        print('obsIDs done!')
