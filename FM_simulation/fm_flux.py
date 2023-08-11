@@ -1,207 +1,292 @@
-
-import sys
-import lal
-import time
-import numpy as np
-from lal import gpstime
-import astropy.units as u
-from astropy.time import Time
-from astropy import units as u
-from datetime import datetime, timedelta
-from astropy.coordinates import get_sun, get_moon
-from astropy.coordinates import SkyCoord, EarthLocation, AltAz
-
-np.seterr(divide='ignore', invalid='ignore')
-lal.gpstime.GPS_EPOCH = lal.EPOCH_J2000_0_JD
-
-
-
-def zen_an(obsid, lat, lon,):
-
-    mwa_latitude_dec_deg = -26.70331940
-    mwa_longitude_dec_deg = 116.67081524
-    mwa_elevation = 377.83
-    ut = obsid # in UTC datetime.datetime
-    print(ut)
-    mwa_loc = EarthLocation(lat=mwa_latitude_dec_deg*u.deg, \
-                            lon=mwa_longitude_dec_deg*u.deg, \
-                            height=mwa_elevation*u.m)
-    ant_loc = EarthLocation(lat=lat*u.deg, lon=lon*u.deg, height=0*u.m)
-
-    Moon_time = Time(ut, format='gps')
-    ant_time = Time(ut, format='gps')
+try:
+    import sys
+    import lal
+    import numpy as np
+    import astropy.units as u
+    from astropy.time import Time
+    from astropy.coordinates import get_moon
+    from astropy.coordinates import EarthLocation, AltAz
     
-    altaz_mwa = AltAz(obstime=Moon_time, location=mwa_loc)
-    altaz_ant = AltAz(obstime=ant_time, location=ant_loc)
+    np.seterr(divide='ignore', invalid='ignore')
+    lal.gpstime.GPS_EPOCH = lal.EPOCH_J2000_0_JD
 
-    altaz_mwa = get_moon(Moon_time,).transform_to(altaz_mwa)
-    altaz_ant = get_moon(ant_time,).transform_to(altaz_ant)
+except IOError:
+    raise IOError('repository absent')
 
-    return altaz_mwa, altaz_ant
 
-def moon_mask(iml):
-    
-    moon_albedo = 0.07
-    moon_solid_angle = 7.365*10**(-5)
-    earth_solid_angle = 8.625*10**(-4)
-    moon_radius = 1737.4*(10**3)
+class FM_CALC(object):
+    """
+    Evaluates the reflected FM from the FM catalog
 
-    pix_size_deg=0.0085
-    moon_diameter_arcmin = 33.29
-    moon_diameter_deg = moon_diameter_arcmin/60
-    moon_radius_deg = moon_diameter_deg/2. 
-    #area of moon in deg_sq
-    moon_area_deg_sq = np.pi*(moon_radius_deg)**2
+    Args:
+        object (object): 
+    """
+    
+    def __init__(self, catfilename, path, telescope_loc=None):
+        """_summary_
 
-    steradian_in_sq_deg = (180/np.pi)**2
-    #solid angle subtended by Moon in Steradians
-    Omega = moon_area_deg_sq/steradian_in_sq_deg
-
-    # moon mask
-    image_length = iml
-    image_height = iml
-    moon_radius_pix = np.round(moon_radius_deg/pix_size_deg)
-    moon_mask = np.zeros((image_length,image_height))
-    a,b = (image_length/2)-1, (image_height/2)-1
-    y,x = np.ogrid[-a:image_length-a, -b:image_height-b]
-    mask = x*x + y*y <= moon_radius_pix*moon_radius_pix
-    moon_mask[mask]=1
-    moon_mask = moon_mask.flatten('F')
-    
-    return moon_mask
-
-def station_contributions(obsid):
-    
-    altaz_ant = np.load('data/Aug2015/altaz_%d.npy'%obsid)
-    ## this array holds altitude-azimuth info. (index 0 is MWA's alt-az )
-
-    stations = np.load('full_earth_FM_moonrak.npy') 
-    ## includes FM transmitters across the earth.[id, lat, long, freq[MHz], power]
-    
-    altaz_mwa = altaz_ant[0] ## alt-az of moon from MWA
-    
-    indx = np.where(altaz_ant[1:,1]>=0.)[0] ## altitude > 0. moon is above horizon
-    altaz_ant = altaz_ant[indx] 
-    stations = stations[indx] # using alt >0 deg stations
-    
-   
-    ind = np.where(stations[:,4]==0)[0] ## checking 0 KW power stations 
-    stations_non0 = np.delete(stations[:,4], ind,) 
-    ##deleting 0 power stations for average power amongst non0
-    
-    stations_non0_avg = np.average(stations_non0) ## taking average power
-    
-    stations_non0_std = np.std(stations_non0)  ## taking Std. deviation 
-    
-
-    for i in range(len(ind)):
-        rand_power = np.random.normal(loc=stations_non0_avg, scale=stations_non0_std) 
-        ## giving a random power
-        stations[ind[i]][4] = np.abs(rand_power) # to stations
+        Args:
+            catfilename (str): FM catalog filename
+            path (str): path to the FM catalog
+            telescope_loc (tuple, , units: (degree, degrees, meter), optional): tuple of telescope location 
+            (telescope_lat, telescope_lon, telescope_elev). Defaults to None and uses MWA's location parameters.
+        """
         
-    return stations, altaz_ant, altaz_mwa, len(stations)
-
-
-def Power_at_Moon(stations, altaz_ant, altaz_mwa):
-
-    moon_albedo = 0.07
-    moon_solid_angle = 7.365*10**(-5)
-    earth_solid_angle = 8.625*10**(-4)
-    moon_radius = 1737.4*(10**3)
-    
-    index = []
-    power_summed =[]
-
-    power = np.zeros(len(stations))
-    Powers_Recieved_per_Hz = np.zeros(shape=len(stations))
-    freq = np.zeros(len(stations))
-    distance2 = np.zeros(len(stations))
-    transmitter_BW = 180000.0
-    MWA_bandwidth = 30720000
-    Gain = 1.0
-    Radar_Cross_Section = 0.081 * np.pi * moon_radius**2
-    dilution_factor = transmitter_BW/MWA_bandwidth
-    
-    for i in range(len(stations)):
-         
-        distance1 = altaz_ant[i][2] # distance station-Moon (meters)
-           
-        distance2 = altaz_mwa[2]    # distance mwa-Moon (meters)
+        self.FM_catlog = np.load(path + catfilename)
         
-        P_at_Moon = ((stations[i][4]*(10**3))/(4*np.pi*(distance1 - moon_radius)**2))\
-                    *Radar_Cross_Section*moon_albedo # power of station in KW
-        
-        power[i] =  P_at_Moon
-        
-        freq[i] = stations[i][3] * 10**6 # freq in Hz
-        
-              
+        if telescope_loc == None:
+            # using MWA's location
+            telescope_loc = (-26.70331940, 116.67081524, 377.83)
+        self.telescope_loc = telescope_loc
     
-    
-    freq_int = np.around(freq, decimals=1 ) # making FM catalog freq in 0.1 MHz 
-    
-    argIndx = np.argsort(freq_int) # sorting low to high freq
-    freqFM = freq_int[argIndx]
-    power = power[argIndx]
+    def get_altaz_n_dist(self, obsID, FM_loc=None, save_as_array=True, savefilename=None, savepath=None):
+        
+        """
+        Uses astropy to get the altaz and distance of the telescope, FM station from the Moon at give GPSTIME.
 
-    freqFM_uni, uniq_indx = np.unique(freqFM, return_index=True) # unique indicies of FM frequencies
-    power_summ = np.zeros(len(uniq_indx)) ## summing similar frequency power
-    for i in range(len(power_summ)):
-        if i == len(power_summ)-1:
-            power_summ[i] = np.sum(power[uniq_indx[i]: len(freqFM)]) # summing power within 0.1 MHz
+        Args:
+            obsID (int): GPSTIME at which the Moon's sky location is obtained.
+            FM_loc (1D tuple, 1D list, 1D, 2d-array, units: (degree, degrees, meter)): (latitude, longitude, height)
+            of the FM station or a location at which radio transmitter is. height can be put to zero meters. 
+            if FM_loc is None, then uses class instance
+            save_full_array (bool, optional): True if saving full altaz_and_distance as numpy array. Defaults to True.
+            savefilename (str): if save_full_array is True, then provide filename to be save with.
+            savepath (str): if save_full_array is True, then file provide location for the save.
+            
+        Returns:
+        
+            altitude, azimuth, distance of the Moon from telescope's location (tuple, units: (degrees, degrees, meters)),
+            altitude, azimuth, distance of the Moon from FM station's location (tuple, units: (degrees, degrees, meters)
+            
+        """
+
+        telescope_loc = EarthLocation(lat=self.telescope_loc[0]*u.deg, lon=self.telescope_loc[1]*u.deg,\
+                                        height=self.telescope_loc[2]*u.meter)
+        if FM_loc == None:
+            FM_loc = self.FM_catlog[:,1:4] # index 1, 2 corresponds to lat, long of FM stations in degrees
+            FM_loc[:,2] = 0 # putting heights to 0 meters
+            
+        if FM_loc.ndim > 1:
+            FM_station_loc = EarthLocation(lat=FM_loc[:,0]*u.deg, lon=FM_loc[:,1]*u.deg, height=FM_loc[:,2]*u.m)
+        elif FM_loc.ndim == 1:
+            FM_station_loc = EarthLocation(lat=FM_loc[0]*u.deg, lon=FM_loc[1]*u.deg, height=FM_loc[2]*u.m)
+
+        Moon_at_given_time = Time(int(obsID), format='gps')
+        altaz_telescope = AltAz(obstime=Moon_at_given_time, location=telescope_loc)
+        altaz_FM_station = AltAz(obstime=Moon_at_given_time, location=FM_station_loc)
+        altaz_telescope = get_moon(Moon_at_given_time,).transform_to(altaz_telescope)
+        altaz_FM_station = get_moon(Moon_at_given_time,).transform_to(altaz_FM_station)
+  
+        altaz_dis = np.empty(shape=(len(FM_loc)+1, 3)) 
+        # adding +1 to store telescope's altaz, indices 0,1,2 corrresponds, altitude, azimuth, distance from Moon
+
+        altaz_dis[0] = altaz_telescope.az.deg, altaz_telescope.alt.deg, altaz_telescope.distance.m
+        altaz_dis[1:].T[:] = altaz_FM_station.az.deg, altaz_FM_station.alt.deg, altaz_FM_station.distance.m   
+            
+        if save_as_array == True:
+            np.save(savepath+savefilename, altaz_dis) #(units,: deg, deg, meter)
+            
         else:
-            power_summ[i] = np.sum(power[uniq_indx[i]:uniq_indx[i+1]])
-    
-    return freqFM_uni, power_summ, #Powers_Recieved_per_Hz_sum
+            return altaz_dis
 
-    
+    def station_RFIcontributions(self, obsID, altaz_array=None, altaz_filename=None,\
+        randomise_zero_power_stations=True, save_as_array=True, savefilename=None, savepath=None):
+        
+        """
+        Get the FM stations contributing in the reflected RFI from the Moon at the given observation time.
 
-def flux_calc(power, freq, altaz_mwa):
-    
-    moon_albedo = 0.07
-    moon_solid_angle = 7.365*10**(-5)
-    earth_solid_angle = 8.625*10**(-4)
-    moon_radius = 1737.4*(10**3)
-    bandwidth = 10*(10**3)               ### assuming stations emits over 10KHz band
-    Aeff_MWA = 22
-    
-    # 2 pi for reflection reflecting to half hemisphere
-    distance2 = altaz_mwa[2]    # distance mwa-Moon (meters)
-    flux = power/(4*np.pi*((distance2-moon_radius)**2)*bandwidth)
-    flux = flux * (10**26)
-    return flux
-    
+        Args:
 
+            obsID (int): GPSTIME at which the Moon's sky location is obtained.
+            altaz_array (bool, optional): if True then provide altaz array information, otherwise uses self.instance
+            altaz_filename (str, optional): path of the altaz file.
+            randomise_zero_power_stations (bool, optional): if randomise the zero/missing power stations based on the non-zeros powered stations
+            save_as_array (bool, optional): True if want to save the station array as file
+            savefilename (str, optional): if True, provide the filename to save, format:.npy
+            savepath    (str, optional): path to save the file
+            
+        Raises:
+            RuntimeError: uses function under main instances
+            TypeError: bool required
 
-def spec_RFI_st(j):
-    stt = station_contributions(j)
-    altaz_stat = stt[1]
-    mwa_altaz = stt[2]
-    i_eq_r_indx = []
-    for i in range(stt[3]):
-        ## 4 deg
-        x = np.isclose(mwa_altaz[1], altaz_stat[i][1], rtol=0.001, atol=1)
-        if x == True:
-            i_eq_r_indx.append(i)
+        Returns:
+        
+            file or ndarray: FM contribution from where the Moon lying above the horizon during the scheduled observation from given telescope.
+            
+        """
+        
+        if altaz_array != None:
+            altaz_array = np.load(altaz_filename) ## this array holds altitude-azimuth info. (index 0 is MWA's alt-az )
         else:
+            if __name__ == '__main__':
+                altaz_array = self.get_altaz_n_dist(obsID, FM_loc=None, save_as_array=False, savefilename=None, savepath=None)
+            else:
+                raise RuntimeError('run within self instance')
+            
+        ## FM catalog includes FM transmitters across the earth.[station ID, lat(deg.), long(deg.), freq(MHz), power(KW)]
+        FM_catalog = self.FM_catlog 
+        
+        altaz_stations = altaz_array[1:,:]
+        altaz_telescope = altaz_array[0]
+
+        if altaz_telescope[1]>0: # Moon is above the horizon at the telescope's location for given obsID (GPSTIME)
+            
+            contributing_stations_index = np.where(altaz_stations[:,1]>=0.)[0] # Moon above horizon at the location of FM stations
+            
+            altaz_stations = altaz_stations[contributing_stations_index] 
+            FM_catalog = FM_catalog[contributing_stations_index]
+
+            if type(randomise_zero_power_stations) != bool:
+                raise TypeError('not a bool type')
+            
+            elif bool(randomise_zero_power_stations) == True:
+                ## checking 0 KW power stations (missing data)
+                missing_freq_index = np.where(FM_catalog[:,3]==0)[0]
+                FM_catalog = np.delete(FM_catalog, missing_freq_index, axis=0)
+                altaz_stations = np.delete(altaz_stations, missing_freq_index, axis=0)
+                nonzero_power_stations_ind = np.where(FM_catalog[:,4]!=0.)[0] 
+                mean_power = np.nanmean(FM_catalog[:,4][nonzero_power_stations_ind])
+                std_power = np.nanstd(FM_catalog[:,4][nonzero_power_stations_ind]) 
+                 
+                zero_power_stations_ind = np.where(FM_catalog[:,4]!=0.)[0] 
+                
+                rand_power = np.random.normal(loc=mean_power, div=std_power, size=len(zero_power_stations_ind)) 
+                ## giving unhealthy stations a random power
+                FM_catalog[zero_power_stations_ind, 4] = np.abs(rand_power) # to stations
+                    
+            elif bool(randomise_zero_power_stations) == False:
+                
+                # discarding zero powered stations
+                FM_catalog = np.delete(FM_catalog, zero_power_stations_ind, axis=0) 
+                altaz_stations = np.delete(altaz_stations, zero_power_stations_ind, axis=0)
+            # stored data as station ID, lat, long, freq, power, alt, az, distance
+            stations = np.concatenate([FM_catalog, altaz_stations], axis=-1) # typical shape N x 8
+            ## adding telescope location in the zeroth index of the array # shape required 1 x 8
+            # stored data as np.nan, lat, long, height, np.nan alt, az, distance (frequency is replaced by height)
+            telescope_parameters = np.concatenate([np.nan, np.array([self.telescope_loc]), np.nan, altaz_telescope])
+            telescope_parameters = telescope_parameters.reshape(1, len(telescope_parameters))
+            stations = np.concatenate([telescope_parameters, stations], axis=0)
+            
+            if save_as_array == True:
+                np.save(savepath+savefilename, stations)   
+            else:   
+                return stations
+        else:
+            print("The Moon is below the horizon at telescope's at given GPSTIME!")
             pass
+
+
+    def get_FM_RFI_flux(self, obsID, station_BW=180, div=5, bandpass='constant', stations_array=None,\
+                        save_as_array=None, savefilename=None, savepath=None):
         
-    i_eq_r_indx =np.array(i_eq_r_indx)
-    return i_eq_r_indx
+        """
+        This function outputs the expected reflected power received at the location of the observing telescope from all of 
+        the contributing FM stations at the time of the observation.
 
+        Args:
+            obsID (_type_): _description_
+            station_BW (int, optional): assumed bandwidth of the FM stations, (assumes all stations have same bandwidth). Defaults to 180 kHz.
+            div (int, optional): division factor decides the number of frequency samples considered in the assumed bandwidth. Defaults to 5.
+            bandpass (str, optional): assumes the bandpass structure of the FM stations assuming 180KHz. Available options, constant, Gaussian
+            stations_array (optional): FM contribution from where the Moon lying above the horizon during 
+            the scheduled observation from given telescope. Defaults to None.
+            save_as_array (bool, optional): True if want to save the station array as file
+            savefilename (str, optional): if True, provide the filename to save, format:.npy
+            savepath    (str, optional): path to save the file
 
-ind = int(sys.argv[1])
-obsids = np.loadtxt('../obsIDs_Aug2015', dtype=np.int32)
+        Raises:
+            TypeError: only self instance supported
 
-on_ind = int(2*ind)
-off_ind = int(on_ind + 1)
+        Returns:
+            array: 
+            freq (array): frequency array FM catalog. units: MHz
+            flux-density (array): reflected RFI FM flux-density at the location of the telescope, units: Jy
+            sigma-flux-density (array): errors based on the power in the flux-density, units: Jy
+        """
 
-stations, altaz_ant, altaz_mwa, st_count = station_contributions(obsids[on_ind])
-freq, Power= Power_at_Moon(stations=stations, altaz_ant=altaz_ant, altaz_mwa=altaz_mwa)
-flux = flux_calc(power=Power, freq=freq, altaz_mwa=altaz_mwa)
+        if stations_array == None:
+            if __name__ == '__main__':
+                
+                stations_array = self.station_RFIcontributions(obsID, altaz_array=None, altaz_filename=None,\
+                        randomise_zero_power_stations=True, save_as_array=False, savefilename=None, savepath=None)
+            else:
+                raise TypeError
+        
+        moon_radius = 1737.4*(10**3) *u.m
+        MWA_A_eff = 22.2 *u.m *u.m
+        transmitter_BW = 180000.0 *u.Hertz    
+        Radar_Cross_Section = 0.081*(np.pi * (moon_radius**2))
+    
+        power = np.empty(len(stations_array[1:])* div) ## input all the stations at given obsid
+        freq = np.empty(len(stations_array[1:])* div) ## store corresponding frequency of stations
+        
+        for st_count in range(1, len(power), div): # indexing over 5 elements
+            
+            # altaz array stores the [alt, az, distance] from 
+            distance1 = np.average(stations_array[1:,-1])*u.m # distance station-Moon (meters)
 
-np.savetxt('data/Aug2015/freq_%d'%obsids[on_ind], freq)
-np.savetxt('data/Aug2015/power_%d'%obsids[on_ind], Power)
-np.savetxt('data/Aug2015/flux_%d'%obsids[on_ind], flux)
-np.savetxt('data/Aug2015/altaz_ant_%d'%obsids[on_ind], altaz_ant)
-np.savetxt('data/Aug2015/altaz_mwa_%d'%obsids[on_ind], altaz_mwa)
+            P_at_Moon = (((stations_array[st_count,4]).to(u.watt)/((distance1 - moon_radius)**2))*Radar_Cross_Section).to(u.watt)
+            
+            freq_dev = (np.linspace(-station_BW/2, station_BW/2, div)*u.kHz).to(u.MHz) # in MHz
+            freq[st_count:st_count+div] = stations_array[st_count:st_count+div][:,4]*u.MHz + freq_dev
+            
+            if bandpass == 'constant':
+                power[st_count:st_count+div] =  P_at_Moon
+                
+            elif bandpass == 'Gaussian':
+                power_dev = np.array([.707, .95, 1., 0.95, .707])
+                power[st_count:st_count+div] =  P_at_Moon*power_dev
+            
+            ## I can assume that power follows a Gaussian-kind pattern,
+            ## instead of being constant throughout the 180kHz bandwidth
+            ## here we need to understand that the station power peaks at the station frequency
+            ## and assume that it was fell off FWHM at 90kHz (half around the bandwidth of 180kHz)
+        
+        argIndx = np.argsort(freq.value) # sorting low to high freq
+        freq = freq[argIndx]
+        power = power[argIndx]
+        
+        freqFM_uniq, uniq_indx = np.unique(freq.value, return_index=True) # unique indicies of FM frequencies
+        power_sum = np.empty(len(uniq_indx)) ## summing similar frequency power
+        power_var = np.empty(len(uniq_indx))
+        
+        for sum_index in range(len(power_sum)):
+            if sum_index == len(power_sum)-1:
+                # last element 
+                power_sum[sum_index] = np.sum(power[uniq_indx[sum_index]: len(freq)])
+                power_var[sum_index] = np.std(power[uniq_indx[sum_index]: len(freq)])
+            else:
+                power_sum[sum_index] = np.sum(power[uniq_indx[sum_index]:uniq_indx[sum_index+1]])
+                power_var[sum_index] = np.std(power[uniq_indx[sum_index]:uniq_indx[sum_index+1]])
+        
+        distance2 = stations_array[0][-1]*u.m
+        # flux = power (Watts) / (distance^2 * bandwidth * MWA_area)
+        flux_density = power_sum/((4*np.pi*(distance2-moon_radius)**2)* transmitter_BW*MWA_A_eff) 
+        flux_density_std = power_var/((4*np.pi*(distance2-moon_radius)**2)* transmitter_BW*MWA_A_eff) 
+        flux_density = flux_density.to(u.Jy)
+        flux_density_std = flux_density_std.to(u.Jy)  
+        freq_flux = np.array([freqFM_uniq.value, flux_density.value, flux_density_std.value])
+        
+        if save_as_array == True:
+            np.save(savepath+savefilename, freq_flux)
+            
+        else:   
+            return freqFM_uniq, flux_density, flux_density_std
+
+    def spec_RFI_st(self):
+        
+        #stt = self.station_RFIcontributions()
+        #altaz_stat = stt[1]
+        #mwa_altaz = stt[2]
+        #i_eq_r_indx = []
+        #for i in range(stt[3]):
+        #    ## 4 deg
+        #    x = np.isclose(mwa_altaz[1], altaz_stat[i][1], rtol=0.001, atol=1)
+        #    if x == True:
+        #        i_eq_r_indx.append(i)
+        #    else:
+        #        pass
+        #    
+        #i_eq_r_indx =np.array(i_eq_r_indx)
+        #return i_eq_r_indx
+        pass # TBD
