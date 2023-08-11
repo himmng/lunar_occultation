@@ -1,6 +1,6 @@
 try:
-    import sys
     import lal
+    from lal import gpstime
     import numpy as np
     import astropy.units as u
     from astropy.time import Time
@@ -22,17 +22,18 @@ class FM_CALC(object):
         object (object): 
     """
     
-    def __init__(self, catfilename, path, telescope_loc=None):
-        """_summary_
+    def __init__(self, catalog_path, telescope_loc=None):
+        
+        """
+        Initiation
 
         Args:
-            catfilename (str): FM catalog filename
-            path (str): path to the FM catalog
+            catalog_path (str): path to the FM catalog file
             telescope_loc (tuple, , units: (degree, degrees, meter), optional): tuple of telescope location 
             (telescope_lat, telescope_lon, telescope_elev). Defaults to None and uses MWA's location parameters.
         """
         
-        self.FM_catlog = np.load(path + catfilename)
+        self.FM_catlog = np.load(catalog_path)
         
         if telescope_loc == None:
             # using MWA's location
@@ -89,8 +90,8 @@ class FM_CALC(object):
         else:
             return altaz_dis
 
-    def station_RFIcontributions(self, obsID, altaz_array=None, altaz_filename=None,\
-        randomise_zero_power_stations=True, save_as_array=True, savefilename=None, savepath=None):
+    def station_RFIcontributions(self, obsID, altaz_array=None, randomise_zero_power_stations=True,\
+                                save_as_array=True, savefilename=None, savepath=None):
         
         """
         Get the FM stations contributing in the reflected RFI from the Moon at the given observation time.
@@ -114,43 +115,38 @@ class FM_CALC(object):
             file or ndarray: FM contribution from where the Moon lying above the horizon during the scheduled observation from given telescope.
             
         """
-        
-        if altaz_array != None:
-            altaz_array = np.load(altaz_filename) ## this array holds altitude-azimuth info. (index 0 is MWA's alt-az )
-        else:
-            if __name__ == '__main__':
-                altaz_array = self.get_altaz_n_dist(obsID, FM_loc=None, save_as_array=False, savefilename=None, savepath=None)
-            else:
-                raise RuntimeError('run within self instance')
             
         ## FM catalog includes FM transmitters across the earth.[station ID, lat(deg.), long(deg.), freq(MHz), power(KW)]
         FM_catalog = self.FM_catlog 
         
         altaz_stations = altaz_array[1:,:]
         altaz_telescope = altaz_array[0]
-
+        
+        missing_freq_index = np.where(FM_catalog[:,4]==0.)[0]
+        FM_catalog = np.delete(FM_catalog, missing_freq_index,axis=0)
+        altaz_stations = np.delete(altaz_stations, missing_freq_index, axis=0)
+        print(FM_catalog.shape)
+        
+        
         if altaz_telescope[1]>0: # Moon is above the horizon at the telescope's location for given obsID (GPSTIME)
             
             contributing_stations_index = np.where(altaz_stations[:,1]>=0.)[0] # Moon above horizon at the location of FM stations
-            
             altaz_stations = altaz_stations[contributing_stations_index] 
             FM_catalog = FM_catalog[contributing_stations_index]
-
+            print(altaz_stations.shape, FM_catalog.shape)
             if type(randomise_zero_power_stations) != bool:
                 raise TypeError('not a bool type')
             
             elif bool(randomise_zero_power_stations) == True:
                 ## checking 0 KW power stations (missing data)
-                missing_freq_index = np.where(FM_catalog[:,3]==0)[0]
-                FM_catalog = np.delete(FM_catalog, missing_freq_index, axis=0)
-                altaz_stations = np.delete(altaz_stations, missing_freq_index, axis=0)
+                
                 nonzero_power_stations_ind = np.where(FM_catalog[:,4]!=0.)[0] 
                 mean_power = np.nanmean(FM_catalog[:,4][nonzero_power_stations_ind])
                 std_power = np.nanstd(FM_catalog[:,4][nonzero_power_stations_ind]) 
                  
                 zero_power_stations_ind = np.where(FM_catalog[:,4]!=0.)[0] 
                 
-                rand_power = np.random.normal(loc=mean_power, div=std_power, size=len(zero_power_stations_ind)) 
+                rand_power = np.random.normal(loc=mean_power, scale=std_power, size=len(zero_power_stations_ind)) 
                 ## giving unhealthy stations a random power
                 FM_catalog[zero_power_stations_ind, 4] = np.abs(rand_power) # to stations
                     
@@ -160,10 +156,16 @@ class FM_CALC(object):
                 FM_catalog = np.delete(FM_catalog, zero_power_stations_ind, axis=0) 
                 altaz_stations = np.delete(altaz_stations, zero_power_stations_ind, axis=0)
             # stored data as station ID, lat, long, freq, power, alt, az, distance
-            stations = np.concatenate([FM_catalog, altaz_stations], axis=-1) # typical shape N x 8
+            stations = np.concatenate([FM_catalog, altaz_stations]) # typical shape N x 8
             ## adding telescope location in the zeroth index of the array # shape required 1 x 8
             # stored data as np.nan, lat, long, height, np.nan alt, az, distance (frequency is replaced by height)
-            telescope_parameters = np.concatenate([np.nan, np.array([self.telescope_loc]), np.nan, altaz_telescope])
+            telescope_parameters = np.array([np.nan, self.telescope_loc[0],\
+                                                        self.telescope_loc[1],\
+                                                            self.telescope_loc[2],\
+                                                                np.nan,\
+                                                                    altaz_telescope[0], \
+                                                                        altaz_telescope[1],\
+                                                                            altaz_telescope[2]])
             telescope_parameters = telescope_parameters.reshape(1, len(telescope_parameters))
             stations = np.concatenate([telescope_parameters, stations], axis=0)
             
