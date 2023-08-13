@@ -2,7 +2,7 @@ try:
     import lal
     from lal import gpstime
     import numpy as np
-    import astropy.units as u
+    from astropy import units as u
     from astropy.time import Time
     from astropy.coordinates import get_moon
     from astropy.coordinates import EarthLocation, AltAz
@@ -90,7 +90,7 @@ class FM_CALC(object):
         else:
             return altaz_dis
 
-    def station_RFIcontributions(self, obsID, altaz_array=None, randomise_zero_power_stations=True,\
+    def get_station_RFIcontributions(self, obsID, altaz_array=None, randomise_zero_power_stations=True,\
                                 save_as_array=True, savefilename=None, savepath=None):
         
         """
@@ -125,15 +125,13 @@ class FM_CALC(object):
         missing_freq_index = np.where(FM_catalog[:,4]==0.)[0]
         FM_catalog = np.delete(FM_catalog, missing_freq_index,axis=0)
         altaz_stations = np.delete(altaz_stations, missing_freq_index, axis=0)
-        print(FM_catalog.shape)
-        
         
         if altaz_telescope[1]>0: # Moon is above the horizon at the telescope's location for given obsID (GPSTIME)
             
             contributing_stations_index = np.where(altaz_stations[:,1]>=0.)[0] # Moon above horizon at the location of FM stations
             altaz_stations = altaz_stations[contributing_stations_index] 
             FM_catalog = FM_catalog[contributing_stations_index]
-            print(altaz_stations.shape, FM_catalog.shape)
+            
             if type(randomise_zero_power_stations) != bool:
                 raise TypeError('not a bool type')
             
@@ -156,7 +154,7 @@ class FM_CALC(object):
                 FM_catalog = np.delete(FM_catalog, zero_power_stations_ind, axis=0) 
                 altaz_stations = np.delete(altaz_stations, zero_power_stations_ind, axis=0)
             # stored data as station ID, lat, long, freq, power, alt, az, distance
-            stations = np.concatenate([FM_catalog, altaz_stations]) # typical shape N x 8
+            stations = np.concatenate([FM_catalog, altaz_stations], axis=1) # typical shape N x 8
             ## adding telescope location in the zeroth index of the array # shape required 1 x 8
             # stored data as np.nan, lat, long, height, np.nan alt, az, distance (frequency is replaced by height)
             telescope_parameters = np.array([np.nan, self.telescope_loc[0],\
@@ -179,7 +177,7 @@ class FM_CALC(object):
 
 
     def get_FM_RFI_flux(self, obsID, station_BW=180, div=5, bandpass='constant', stations_array=None,\
-                        save_as_array=None, savefilename=None, savepath=None):
+                        save_as_array=True, savefilename=None, savepath=None):
         
         """
         This function outputs the expected reflected power received at the location of the observing telescope from all of 
@@ -206,14 +204,6 @@ class FM_CALC(object):
             sigma-flux-density (array): errors based on the power in the flux-density, units: Jy
         """
 
-        if stations_array == None:
-            if __name__ == '__main__':
-                
-                stations_array = self.station_RFIcontributions(obsID, altaz_array=None, altaz_filename=None,\
-                        randomise_zero_power_stations=True, save_as_array=False, savefilename=None, savepath=None)
-            else:
-                raise TypeError
-        
         moon_radius = 1737.4*(10**3) *u.m
         MWA_A_eff = 22.2 *u.m *u.m
         transmitter_BW = 180000.0 *u.Hertz    
@@ -223,26 +213,28 @@ class FM_CALC(object):
         freq = np.empty(len(stations_array[1:])* div) ## store corresponding frequency of stations
         
         for st_count in range(1, len(power), div): # indexing over 5 elements
-            
-            # altaz array stores the [alt, az, distance] from 
-            distance1 = np.average(stations_array[1:,-1])*u.m # distance station-Moon (meters)
+            try:
+                # altaz array stores the [alt, az, distance] from 
+                distance1 = np.average(stations_array[1:,-1])*u.m # distance station-Moon (meters)
 
-            P_at_Moon = (((stations_array[st_count,4]).to(u.watt)/((distance1 - moon_radius)**2))*Radar_Cross_Section).to(u.watt)
-            
-            freq_dev = (np.linspace(-station_BW/2, station_BW/2, div)*u.kHz).to(u.MHz) # in MHz
-            freq[st_count:st_count+div] = stations_array[st_count:st_count+div][:,4]*u.MHz + freq_dev
-            
-            if bandpass == 'constant':
-                power[st_count:st_count+div] =  P_at_Moon
+                P_at_Moon = (((stations_array[st_count,4]*u.kilowatt).to(u.watt)/((distance1 - moon_radius)**2))*Radar_Cross_Section)
                 
-            elif bandpass == 'Gaussian':
-                power_dev = np.array([.707, .95, 1., 0.95, .707])
-                power[st_count:st_count+div] =  P_at_Moon*power_dev
-            
-            ## I can assume that power follows a Gaussian-kind pattern,
-            ## instead of being constant throughout the 180kHz bandwidth
-            ## here we need to understand that the station power peaks at the station frequency
-            ## and assume that it was fell off FWHM at 90kHz (half around the bandwidth of 180kHz)
+                freq_dev = (np.linspace(-station_BW/2, station_BW/2, div)*u.kHz).to(u.MHz) # in MHz
+                freq[st_count:st_count+div] = stations_array[st_count:st_count+div][:,4]*u.MHz + freq_dev
+                
+                if bandpass == 'constant':
+                    power[st_count:st_count+div] =  P_at_Moon
+                    
+                elif bandpass == 'Gaussian':
+                    power_dev = np.array([.707, .95, 1., 0.95, .707])
+                    power[st_count:st_count+div] =  P_at_Moon*power_dev
+                
+                ## I can assume that power follows a Gaussian-kind pattern,
+                ## instead of being constant throughout the 180kHz bandwidth
+                ## here we need to understand that the station power peaks at the station frequency
+                ## and assume that it was fell off FWHM at 90kHz (half around the bandwidth of 180kHz)
+            except:
+                pass
         
         argIndx = np.argsort(freq.value) # sorting low to high freq
         freq = freq[argIndx]
@@ -265,7 +257,7 @@ class FM_CALC(object):
         # flux = power (Watts) / (distance^2 * bandwidth * MWA_area)
         flux_density = power_sum/((4*np.pi*(distance2-moon_radius)**2)* transmitter_BW*MWA_A_eff) 
         flux_density_std = power_var/((4*np.pi*(distance2-moon_radius)**2)* transmitter_BW*MWA_A_eff) 
-        flux_density = flux_density.to(u.Jy)
+        flux_density = (flux_density).to(u.Jy)
         flux_density_std = flux_density_std.to(u.Jy)  
         freq_flux = np.array([freqFM_uniq.value, flux_density.value, flux_density_std.value])
         
