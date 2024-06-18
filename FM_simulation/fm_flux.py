@@ -69,6 +69,7 @@ class FM_CALC(object):
             
         if FM_loc.ndim > 1:
             FM_station_loc = EarthLocation(lat=FM_loc[:,0]*u.deg, lon=FM_loc[:,1]*u.deg, height=FM_loc[:,2]*u.m)
+            
         elif FM_loc.ndim == 1:
             FM_station_loc = EarthLocation(lat=FM_loc[0]*u.deg, lon=FM_loc[1]*u.deg, height=FM_loc[2]*u.m)
 
@@ -90,7 +91,7 @@ class FM_CALC(object):
         else:
             return altaz_dis
 
-    def get_station_RFIcontributions(self, obsID, altaz_array=None, randomise_zero_power_stations=True,\
+    def get_station_RFIcontributions(self, altaz_array=None, randomise_zero_power_stations=True,\
                                 save_as_array=True, savefilename=None, savepath=None):
         
         """
@@ -121,10 +122,6 @@ class FM_CALC(object):
         
         altaz_stations = altaz_array[1:,:]
         altaz_telescope = altaz_array[0]
-        
-        missing_freq_index = np.where(FM_catalog[:,4]==0.)[0]
-        FM_catalog = np.delete(FM_catalog, missing_freq_index,axis=0)
-        altaz_stations = np.delete(altaz_stations, missing_freq_index, axis=0)
         
         if altaz_telescope[1]>0: # Moon is above the horizon at the telescope's location for given obsID (GPSTIME)
             
@@ -176,7 +173,7 @@ class FM_CALC(object):
             pass
 
 
-    def get_FM_RFI_flux(self, obsID, station_BW=180, div=5, bandpass='constant', stations_array=None,\
+    def get_FM_RFI_flux(self, transmitter_BW=180, div=5, bandpass='constant', stations_array=None,\
                         save_as_array=True, savefilename=None, savepath=None):
         
         """
@@ -206,28 +203,27 @@ class FM_CALC(object):
 
         moon_radius = 1737.4*(10**3) *u.m
         MWA_A_eff = 22.2 *u.m *u.m
-        transmitter_BW = 180000.0 *u.Hertz    
+        transmitter_BW = transmitter_BW * u.kHz   
         Radar_Cross_Section = 0.081*(np.pi * (moon_radius**2))
     
-        power = np.empty(len(stations_array[1:])* div) ## input all the stations at given obsid
-        freq = np.empty(len(stations_array[1:])* div) ## store corresponding frequency of stations
+        power_arr = np.empty(len(stations_array[1:])* div) ## input all the stations at given obsid
+        freq_arr = np.empty(len(stations_array[1:])* div) ## store corresponding frequency of stations
         
-        for st_count in range(1, len(power), div): # indexing over 5 elements
+        for st_count in range(1, len(power_arr), div): # indexing over 5 elements
             try:
                 # altaz array stores the [alt, az, distance] from 
                 distance1 = np.average(stations_array[1:,-1])*u.m # distance station-Moon (meters)
 
-                P_at_Moon = (((stations_array[st_count,4]*u.kilowatt).to(u.watt)/((distance1 - moon_radius)**2))*Radar_Cross_Section)
-                
-                freq_dev = (np.linspace(-station_BW/2, station_BW/2, div)*u.kHz).to(u.MHz) # in MHz
+                Power_at_Moon = ((stations_array[st_count,4])* Radar_Cross_Section/((distance1 - moon_radius.value)**2)) * u.kilowatt
+                freq_dev = (np.linspace(-transmitter_BW/2, transmitter_BW/2, div)).to(u.MHz) # in MHz
                 freq[st_count:st_count+div] = stations_array[st_count:st_count+div][:,4]*u.MHz + freq_dev
                 
                 if bandpass == 'constant':
-                    power[st_count:st_count+div] =  P_at_Moon
+                    power[st_count:st_count+div] =  Power_at_Moon
                     
                 elif bandpass == 'Gaussian':
                     power_dev = np.array([.707, .95, 1., 0.95, .707])
-                    power[st_count:st_count+div] =  P_at_Moon*power_dev
+                    power[st_count:st_count+div] =  Power_at_Moon*power_dev
                 
                 ## I can assume that power follows a Gaussian-kind pattern,
                 ## instead of being constant throughout the 180kHz bandwidth
@@ -236,11 +232,11 @@ class FM_CALC(object):
             except:
                 pass
         
-        argIndx = np.argsort(freq.value) # sorting low to high freq
+        argIndx = np.argsort(freq) # sorting low to high freq
         freq = freq[argIndx]
         power = power[argIndx]
         
-        freqFM_uniq, uniq_indx = np.unique(freq.value, return_index=True) # unique indicies of FM frequencies
+        freqFM_uniq, uniq_indx = np.unique(freq, return_index=True) # unique indicies of FM frequencies
         power_sum = np.empty(len(uniq_indx)) ## summing similar frequency power
         power_var = np.empty(len(uniq_indx))
         
@@ -255,11 +251,11 @@ class FM_CALC(object):
         
         distance2 = stations_array[0][-1]*u.m
         # flux = power (Watts) / (distance^2 * bandwidth * MWA_area)
-        flux_density = power_sum/((4*np.pi*(distance2-moon_radius)**2)* transmitter_BW*MWA_A_eff) 
-        flux_density_std = power_var/((4*np.pi*(distance2-moon_radius)**2)* transmitter_BW*MWA_A_eff) 
+        flux_density = power_sum*u.kilowatt/((4*np.pi*(distance2-moon_radius)**2)* transmitter_BW*MWA_A_eff) 
+        flux_density_std = power_var*u.kilowatt/((4*np.pi*(distance2-moon_radius)**2)* transmitter_BW*MWA_A_eff) 
         flux_density = (flux_density).to(u.Jy)
         flux_density_std = flux_density_std.to(u.Jy)  
-        freq_flux = np.array([freqFM_uniq.value, flux_density.value, flux_density_std.value])
+        freq_flux = np.array([freqFM_uniq, flux_density, flux_density_std])
         
         if save_as_array == True:
             np.save(savepath+savefilename, freq_flux)
